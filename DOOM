@@ -18,9 +18,8 @@ namespace ConsoleDoom
 
     class Program
     {
-        // ---------- Config ----------
-        const int W = 100;           // screen width in characters
-        const int H = 34;            // 3D view height in characters
+        const int W = 100;
+        const int H = 34;
         const double FOV = Math.PI / 3.0;
         const double MaxDepth = 20.0;
 
@@ -44,7 +43,6 @@ namespace ConsoleDoom
             "################",
         };
 
-        // ---------- State ----------
         static double px = 1.5, py = 1.5, pa = 0.6;
         static int health = 100;
         static int ammo = 50;
@@ -55,7 +53,6 @@ namespace ConsoleDoom
         static List<Enemy> enemies = new List<Enemy>();
         static Random rng = new Random();
 
-        // ---------- Input ----------
         [DllImport("user32.dll")]
         static extern short GetAsyncKeyState(int vKey);
         static readonly bool IsWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
@@ -64,7 +61,7 @@ namespace ConsoleDoom
 
         static void PollInput()
         {
-            if (IsWindows) return; // GetAsyncKeyState handles it
+            if (IsWindows) return;
             while (Console.KeyAvailable)
             {
                 var k = Console.ReadKey(true);
@@ -80,7 +77,6 @@ namespace ConsoleDoom
             return lastSeen.TryGetValue(k, out t) && clock.ElapsedMilliseconds - t < 130;
         }
 
-        // ---------- Helpers ----------
         static bool IsWall(double x, double y)
         {
             int ix = (int)x, iy = (int)y;
@@ -114,7 +110,6 @@ namespace ConsoleDoom
             if (!IsWall(px, ny + Math.Sign(ny - py) * r)) py = ny;
         }
 
-        // ---------- Main ----------
         static void Main()
         {
             try
@@ -126,7 +121,7 @@ namespace ConsoleDoom
                     Console.SetWindowSize(W + 2, H + 6);
                 }
             }
-            catch { /* terminal doesn't allow resizing; carry on */ }
+            catch { }
 
             Console.CursorVisible = false;
             Console.Clear();
@@ -154,7 +149,6 @@ namespace ConsoleDoom
                 PollInput();
                 if (IsDown(ConsoleKey.Escape)) { quit = true; endMessage = "You quit."; break; }
 
-                // --- Player movement ---
                 double turn = 2.2 * dt;
                 if (IsDown(ConsoleKey.A) || IsDown(ConsoleKey.LeftArrow)) pa -= turn;
                 if (IsDown(ConsoleKey.D) || IsDown(ConsoleKey.RightArrow)) pa += turn;
@@ -167,7 +161,6 @@ namespace ConsoleDoom
                 if (IsDown(ConsoleKey.E)) { mx -= Math.Sin(pa); my += Math.Cos(pa); }
                 if (mx != 0 || my != 0) TryMove(px + mx * speed, py + my * speed);
 
-                // --- Shooting ---
                 fireCooldown -= dt;
                 muzzleFlash -= dt;
                 damageFlash -= dt;
@@ -176,7 +169,6 @@ namespace ConsoleDoom
                     Fire();
                 }
 
-                // --- Enemies ---
                 UpdateEnemies(dt);
 
                 if (health <= 0) { endMessage = "YOU DIED. The demons win this time."; break; }
@@ -256,18 +248,16 @@ namespace ConsoleDoom
             }
         }
 
-        // ---------- Rendering ----------
         static void Render()
         {
             char[,] buf = new char[H, W];
             double[] depth = new double[W];
 
-            // Walls, floor, ceiling
             for (int x = 0; x < W; x++)
             {
                 double rayAngle = pa - FOV / 2 + (x / (double)W) * FOV;
                 double dist = CastRay(px, py, rayAngle);
-                dist *= Math.Cos(rayAngle - pa); // fish-eye fix
+                dist *= Math.Cos(rayAngle - pa);
                 depth[x] = dist;
 
                 int ceiling = (int)(H / 2.0 - H / dist);
@@ -299,7 +289,6 @@ namespace ConsoleDoom
                 }
             }
 
-            // Sprites (far to near)
             var visible = new List<Enemy>();
             foreach (var e in enemies) if (e.Alive) visible.Add(e);
             visible.Sort((a, b) =>
@@ -328,28 +317,26 @@ namespace ConsoleDoom
                     int x = centerX + sx;
                     if (x < 0 || x >= W) continue;
                     if (depth[x] < dist) continue;
-                    double u = sx / (double)halfW; // -1..1
+                    double u = sx / (double)halfW;
                     for (int sy = 0; sy < size; sy++)
                     {
                         int y = top + sy;
                         if (y < 0 || y >= H) continue;
-                        double t = sy / (double)size; // 0..1 top..bottom
+                        double t = sy / (double)size;
                         char c;
-                        if (t < 0.25) { if (Math.Abs(u) > 0.5) continue; c = 'O'; }   // head
-                        else if (t < 0.65) c = (Math.Abs(u) > 0.85) ? '/' : 'X';          // torso/arms
-                        else { if (Math.Abs(u) < 0.15) continue; c = 'H'; }              // legs
+                        if (t < 0.25) { if (Math.Abs(u) > 0.5) continue; c = 'O'; }
+                        else if (t < 0.65) c = (Math.Abs(u) > 0.85) ? '/' : 'X';
+                        else { if (Math.Abs(u) < 0.15) continue; c = 'H'; }
                         if (e.HitFlash > 0) c = '*';
                         buf[y, x] = c;
                     }
                 }
             }
 
-            // Crosshair
             buf[H / 2, W / 2] = '+';
             buf[H / 2, W / 2 - 2] = '-';
             buf[H / 2, W / 2 + 2] = '-';
 
-            // Gun
             string[] gun =
             {
                 "   ||   ",
@@ -376,7 +363,6 @@ namespace ConsoleDoom
                             buf[gy - flash.Length + i, gx + j] = flash[i][j];
             }
 
-            // Minimap
             for (int my = 0; my < Map.Length; my++)
                 for (int mx = 0; mx < Map[my].Length; mx++)
                     buf[my, mx] = Map[my][mx] == '#' ? '#' : '.';
@@ -384,7 +370,6 @@ namespace ConsoleDoom
                 if (e.Alive && (int)e.Y < H && (int)e.X < W) buf[(int)e.Y, (int)e.X] = 'e';
             buf[(int)py, (int)px] = 'P';
 
-            // Compose
             var sb = new StringBuilder(W * (H + 4));
             for (int y = 0; y < H; y++)
             {
@@ -406,11 +391,11 @@ namespace ConsoleDoom
         static void ShowTitle()
         {
             Console.WriteLine();
-            Console.WriteLine("   ____   ___   ___  __  __     ____ ___  _   _ ____   ___  _     _____ ");
-            Console.WriteLine("  |  _ \\ / _ \\ / _ \\|  \\/  |   / ___/ _ \\| \\ | / ___| / _ \\| |   | ____|");
-            Console.WriteLine("  | | | | | | | | | | |\\/| |  | |  | | | |  \\| \\___ \\| | | | |   |  _|  ");
-            Console.WriteLine("  | |_| | |_| | |_| | |  | |  | |__| |_| | |\\  |___) | |_| | |___| |___ ");
-            Console.WriteLine("  |____/ \\___/ \\___/|_|  |_|   \\____\\___/|_| \\_|____/ \\___/|_____|_____|");
+            Console.WriteLine("    ____   ___   ___  __  __     ____ ___  _   _ ____   ___  _     _____ ");
+            Console.WriteLine("   |  _ \\ / _ \\ / _ \\|  \\/  |   / ___/ _ \\| \\ | / ___| / _ \\| |   | ____|");
+            Console.WriteLine("   | | | | | | | | | | |\\/| |  | |  | | | |  \\| \\___ \\| | | | |   |  _|  ");
+            Console.WriteLine("   | |_| | |_| | |_| | |  | |  | |__| |_| | |\\  |___) | |_| | |___| |___ ");
+            Console.WriteLine("   |____/ \\___/ \\___/|_|  |_|   \\____\\___/|_| \\_|____/ \\___/|_____|_____|");
             Console.WriteLine();
             Console.WriteLine("   Kill all 7 demons before they kill you.");
             Console.WriteLine();
