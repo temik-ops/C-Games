@@ -1,0 +1,428 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading;
+
+namespace ConsoleDoom
+{
+    class Enemy
+    {
+        public double X, Y;
+        public int Hp = 3;
+        public bool Alive = true;
+        public double AttackCooldown = 1.0;
+        public double HitFlash = 0;
+    }
+
+    class Program
+    {
+        // ---------- Config ----------
+        const int W = 100;           // screen width in characters
+        const int H = 34;            // 3D view height in characters
+        const double FOV = Math.PI / 3.0;
+        const double MaxDepth = 20.0;
+
+        static readonly string[] Map =
+        {
+            "################",
+            "#..............#",
+            "#..###....###..#",
+            "#..#........#..#",
+            "#..#...##...#..#",
+            "#......##......#",
+            "#..#........#..#",
+            "#..###....###..#",
+            "#..............#",
+            "#..##......##..#",
+            "#..............#",
+            "#.....####.....#",
+            "#..............#",
+            "#..#........#..#",
+            "#..............#",
+            "################",
+        };
+
+        // ---------- State ----------
+        static double px = 1.5, py = 1.5, pa = 0.6;
+        static int health = 100;
+        static int ammo = 50;
+        static int kills = 0;
+        static double fireCooldown = 0;
+        static double muzzleFlash = 0;
+        static double damageFlash = 0;
+        static List<Enemy> enemies = new List<Enemy>();
+        static Random rng = new Random();
+
+        // ---------- Input ----------
+        [DllImport("user32.dll")]
+        static extern short GetAsyncKeyState(int vKey);
+        static readonly bool IsWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
+        static Dictionary<ConsoleKey, long> lastSeen = new Dictionary<ConsoleKey, long>();
+        static Stopwatch clock = Stopwatch.StartNew();
+
+        static void PollInput()
+        {
+            if (IsWindows) return; // GetAsyncKeyState handles it
+            while (Console.KeyAvailable)
+            {
+                var k = Console.ReadKey(true);
+                lastSeen[k.Key] = clock.ElapsedMilliseconds;
+            }
+        }
+
+        static bool IsDown(ConsoleKey k)
+        {
+            if (IsWindows)
+                return (GetAsyncKeyState((int)k) & 0x8000) != 0;
+            long t;
+            return lastSeen.TryGetValue(k, out t) && clock.ElapsedMilliseconds - t < 130;
+        }
+
+        // ---------- Helpers ----------
+        static bool IsWall(double x, double y)
+        {
+            int ix = (int)x, iy = (int)y;
+            if (ix < 0 || iy < 0 || iy >= Map.Length || ix >= Map[0].Length) return true;
+            return Map[iy][ix] == '#';
+        }
+
+        static double CastRay(double ox, double oy, double angle)
+        {
+            double dx = Math.Cos(angle), dy = Math.Sin(angle);
+            double d = 0;
+            while (d < MaxDepth)
+            {
+                d += 0.02;
+                if (IsWall(ox + dx * d, oy + dy * d)) return d;
+            }
+            return MaxDepth;
+        }
+
+        static double NormAngle(double a)
+        {
+            while (a > Math.PI) a -= 2 * Math.PI;
+            while (a < -Math.PI) a += 2 * Math.PI;
+            return a;
+        }
+
+        static void TryMove(double nx, double ny)
+        {
+            const double r = 0.2;
+            if (!IsWall(nx + Math.Sign(nx - px) * r, py)) px = nx;
+            if (!IsWall(px, ny + Math.Sign(ny - py) * r)) py = ny;
+        }
+
+        // ---------- Main ----------
+        static void Main()
+        {
+            try
+            {
+                if (IsWindows)
+                {
+                    Console.SetWindowSize(1, 1);
+                    Console.SetBufferSize(W + 2, H + 6);
+                    Console.SetWindowSize(W + 2, H + 6);
+                }
+            }
+            catch { /* terminal doesn't allow resizing; carry on */ }
+
+            Console.CursorVisible = false;
+            Console.Clear();
+
+            ShowTitle();
+
+            enemies.Add(new Enemy { X = 13.5, Y = 1.5 });
+            enemies.Add(new Enemy { X = 13.5, Y = 13.5 });
+            enemies.Add(new Enemy { X = 8.5, Y = 8.5 });
+            enemies.Add(new Enemy { X = 5.5, Y = 5.5 });
+            enemies.Add(new Enemy { X = 10.5, Y = 10.5 });
+            enemies.Add(new Enemy { X = 3.5, Y = 14.5 });
+            enemies.Add(new Enemy { X = 12.5, Y = 5.5 });
+
+            double last = clock.Elapsed.TotalSeconds;
+            bool quit = false;
+            string endMessage = null;
+
+            while (!quit)
+            {
+                double now = clock.Elapsed.TotalSeconds;
+                double dt = Math.Min(now - last, 0.1);
+                last = now;
+
+                PollInput();
+                if (IsDown(ConsoleKey.Escape)) { quit = true; endMessage = "You quit."; break; }
+
+                // --- Player movement ---
+                double turn = 2.2 * dt;
+                if (IsDown(ConsoleKey.A) || IsDown(ConsoleKey.LeftArrow)) pa -= turn;
+                if (IsDown(ConsoleKey.D) || IsDown(ConsoleKey.RightArrow)) pa += turn;
+
+                double speed = 3.2 * dt;
+                double mx = 0, my = 0;
+                if (IsDown(ConsoleKey.W) || IsDown(ConsoleKey.UpArrow)) { mx += Math.Cos(pa); my += Math.Sin(pa); }
+                if (IsDown(ConsoleKey.S) || IsDown(ConsoleKey.DownArrow)) { mx -= Math.Cos(pa); my -= Math.Sin(pa); }
+                if (IsDown(ConsoleKey.Q)) { mx += Math.Sin(pa); my -= Math.Cos(pa); }
+                if (IsDown(ConsoleKey.E)) { mx -= Math.Sin(pa); my += Math.Cos(pa); }
+                if (mx != 0 || my != 0) TryMove(px + mx * speed, py + my * speed);
+
+                // --- Shooting ---
+                fireCooldown -= dt;
+                muzzleFlash -= dt;
+                damageFlash -= dt;
+                if ((IsDown(ConsoleKey.Spacebar) || IsDown(ConsoleKey.F)) && fireCooldown <= 0 && ammo > 0)
+                {
+                    Fire();
+                }
+
+                // --- Enemies ---
+                UpdateEnemies(dt);
+
+                if (health <= 0) { endMessage = "YOU DIED. The demons win this time."; break; }
+                if (enemies.TrueForAll(e => !e.Alive)) { endMessage = "ALL DEMONS DESTROYED. YOU WIN!"; break; }
+
+                Render();
+                Thread.Sleep(10);
+            }
+
+            Console.SetCursorPosition(0, H + 4);
+            Console.CursorVisible = true;
+            Console.WriteLine();
+            Console.WriteLine(endMessage);
+            Console.WriteLine("Kills: " + kills + " / " + enemies.Count);
+        }
+
+        static void Fire()
+        {
+            ammo--;
+            fireCooldown = 0.35;
+            muzzleFlash = 0.12;
+
+            Enemy best = null;
+            double bestDist = double.MaxValue;
+            foreach (var e in enemies)
+            {
+                if (!e.Alive) continue;
+                double dx = e.X - px, dy = e.Y - py;
+                double dist = Math.Sqrt(dx * dx + dy * dy);
+                double rel = NormAngle(Math.Atan2(dy, dx) - pa);
+                double tolerance = Math.Atan2(0.35, dist);
+                if (Math.Abs(rel) < tolerance && dist < CastRay(px, py, Math.Atan2(dy, dx)) && dist < bestDist)
+                {
+                    best = e;
+                    bestDist = dist;
+                }
+            }
+            if (best != null)
+            {
+                best.Hp--;
+                best.HitFlash = 0.15;
+                if (best.Hp <= 0) { best.Alive = false; kills++; ammo += 4; }
+            }
+        }
+
+        static void UpdateEnemies(double dt)
+        {
+            foreach (var e in enemies)
+            {
+                if (!e.Alive) continue;
+                e.HitFlash -= dt;
+                e.AttackCooldown -= dt;
+
+                double dx = px - e.X, dy = py - e.Y;
+                double dist = Math.Sqrt(dx * dx + dy * dy);
+                bool los = dist < CastRay(e.X, e.Y, Math.Atan2(dy, dx));
+
+                if (los && dist < 12 && dist > 1.0)
+                {
+                    double s = 1.3 * dt;
+                    double nx = e.X + dx / dist * s;
+                    double ny = e.Y + dy / dist * s;
+                    if (!IsWall(nx, e.Y)) e.X = nx;
+                    if (!IsWall(e.X, ny)) e.Y = ny;
+                }
+
+                if (los && dist < 6.0 && e.AttackCooldown <= 0)
+                {
+                    e.AttackCooldown = 1.2 + rng.NextDouble() * 0.8;
+                    double hitChance = dist < 2 ? 0.85 : 0.45;
+                    if (rng.NextDouble() < hitChance)
+                    {
+                        health -= 6 + rng.Next(6);
+                        damageFlash = 0.2;
+                    }
+                }
+            }
+        }
+
+        // ---------- Rendering ----------
+        static void Render()
+        {
+            char[,] buf = new char[H, W];
+            double[] depth = new double[W];
+
+            // Walls, floor, ceiling
+            for (int x = 0; x < W; x++)
+            {
+                double rayAngle = pa - FOV / 2 + (x / (double)W) * FOV;
+                double dist = CastRay(px, py, rayAngle);
+                dist *= Math.Cos(rayAngle - pa); // fish-eye fix
+                depth[x] = dist;
+
+                int ceiling = (int)(H / 2.0 - H / dist);
+                int floor = H - ceiling;
+
+                char wall;
+                if (dist < 2) wall = '@';
+                else if (dist < 4) wall = '#';
+                else if (dist < 7) wall = 'x';
+                else if (dist < 11) wall = '+';
+                else if (dist < MaxDepth - 1) wall = '.';
+                else wall = ' ';
+
+                for (int y = 0; y < H; y++)
+                {
+                    if (y < ceiling) buf[y, x] = ' ';
+                    else if (y < floor) buf[y, x] = wall;
+                    else
+                    {
+                        double b = (y - H / 2.0) / (H / 2.0);
+                        char f;
+                        if (b > 0.75) f = '#';
+                        else if (b > 0.55) f = 'x';
+                        else if (b > 0.35) f = '.';
+                        else if (b > 0.18) f = '-';
+                        else f = ' ';
+                        buf[y, x] = f;
+                    }
+                }
+            }
+
+            // Sprites (far to near)
+            var visible = new List<Enemy>();
+            foreach (var e in enemies) if (e.Alive) visible.Add(e);
+            visible.Sort((a, b) =>
+            {
+                double da = (a.X - px) * (a.X - px) + (a.Y - py) * (a.Y - py);
+                double db = (b.X - px) * (b.X - px) + (b.Y - py) * (b.Y - py);
+                return db.CompareTo(da);
+            });
+
+            foreach (var e in visible)
+            {
+                double dx = e.X - px, dy = e.Y - py;
+                double dist = Math.Sqrt(dx * dx + dy * dy);
+                if (dist < 0.3) continue;
+                double rel = NormAngle(Math.Atan2(dy, dx) - pa);
+                if (Math.Abs(rel) > FOV / 2 + 0.4) continue;
+
+                int size = (int)(H / (dist * Math.Cos(rel)));
+                if (size < 1) size = 1;
+                int centerX = (int)((0.5 + rel / FOV) * W);
+                int top = H / 2 - size / 2;
+                int halfW = Math.Max(1, (int)(size * 0.45));
+
+                for (int sx = -halfW; sx <= halfW; sx++)
+                {
+                    int x = centerX + sx;
+                    if (x < 0 || x >= W) continue;
+                    if (depth[x] < dist) continue;
+                    double u = sx / (double)halfW; // -1..1
+                    for (int sy = 0; sy < size; sy++)
+                    {
+                        int y = top + sy;
+                        if (y < 0 || y >= H) continue;
+                        double t = sy / (double)size; // 0..1 top..bottom
+                        char c;
+                        if (t < 0.25) { if (Math.Abs(u) > 0.5) continue; c = 'O'; }   // head
+                        else if (t < 0.65) c = (Math.Abs(u) > 0.85) ? '/' : 'X';          // torso/arms
+                        else { if (Math.Abs(u) < 0.15) continue; c = 'H'; }              // legs
+                        if (e.HitFlash > 0) c = '*';
+                        buf[y, x] = c;
+                    }
+                }
+            }
+
+            // Crosshair
+            buf[H / 2, W / 2] = '+';
+            buf[H / 2, W / 2 - 2] = '-';
+            buf[H / 2, W / 2 + 2] = '-';
+
+            // Gun
+            string[] gun =
+            {
+                "   ||   ",
+                "   ||   ",
+                "  _||_  ",
+                " /____\\ ",
+                " |____| ",
+            };
+            string[] flash =
+            {
+                "  \\||/  ",
+                "  -**-  ",
+            };
+            int gy = H - gun.Length;
+            int gx = W / 2 - 4;
+            for (int i = 0; i < gun.Length; i++)
+                for (int j = 0; j < gun[i].Length; j++)
+                    if (gun[i][j] != ' ') buf[gy + i, gx + j] = gun[i][j];
+            if (muzzleFlash > 0)
+            {
+                for (int i = 0; i < flash.Length; i++)
+                    for (int j = 0; j < flash[i].Length; j++)
+                        if (flash[i][j] != ' ' && gy - flash.Length + i >= 0)
+                            buf[gy - flash.Length + i, gx + j] = flash[i][j];
+            }
+
+            // Minimap
+            for (int my = 0; my < Map.Length; my++)
+                for (int mx = 0; mx < Map[my].Length; mx++)
+                    buf[my, mx] = Map[my][mx] == '#' ? '#' : '.';
+            foreach (var e in enemies)
+                if (e.Alive && (int)e.Y < H && (int)e.X < W) buf[(int)e.Y, (int)e.X] = 'e';
+            buf[(int)py, (int)px] = 'P';
+
+            // Compose
+            var sb = new StringBuilder(W * (H + 4));
+            for (int y = 0; y < H; y++)
+            {
+                for (int x = 0; x < W; x++) sb.Append(buf[y, x]);
+                sb.Append('\n');
+            }
+
+            string bar = new string('=', W);
+            sb.Append(bar).Append('\n');
+            string hud = string.Format(" HEALTH: {0,3}   AMMO: {1,3}   KILLS: {2}/{3}   {4}",
+                Math.Max(health, 0), ammo, kills, enemies.Count, damageFlash > 0 ? "!! OUCH !!" : "");
+            sb.Append(hud.PadRight(W)).Append('\n');
+            sb.Append(" W/S move  A/D turn  Q/E strafe  SPACE or F fire  ESC quit".PadRight(W));
+
+            Console.SetCursorPosition(0, 0);
+            Console.Write(sb.ToString());
+        }
+
+        static void ShowTitle()
+        {
+            Console.WriteLine();
+            Console.WriteLine("   ____   ___   ___  __  __     ____ ___  _   _ ____   ___  _     _____ ");
+            Console.WriteLine("  |  _ \\ / _ \\ / _ \\|  \\/  |   / ___/ _ \\| \\ | / ___| / _ \\| |   | ____|");
+            Console.WriteLine("  | | | | | | | | | | |\\/| |  | |  | | | |  \\| \\___ \\| | | | |   |  _|  ");
+            Console.WriteLine("  | |_| | |_| | |_| | |  | |  | |__| |_| | |\\  |___) | |_| | |___| |___ ");
+            Console.WriteLine("  |____/ \\___/ \\___/|_|  |_|   \\____\\___/|_| \\_|____/ \\___/|_____|_____|");
+            Console.WriteLine();
+            Console.WriteLine("   Kill all 7 demons before they kill you.");
+            Console.WriteLine();
+            Console.WriteLine("   W / S ........ move forward / back");
+            Console.WriteLine("   A / D ........ turn left / right (arrow keys work too)");
+            Console.WriteLine("   Q / E ........ strafe");
+            Console.WriteLine("   SPACE or F ... fire");
+            Console.WriteLine("   ESC .......... quit");
+            Console.WriteLine();
+            Console.WriteLine("   Press any key to start...");
+            Console.ReadKey(true);
+            Console.Clear();
+        }
+    }
+}
