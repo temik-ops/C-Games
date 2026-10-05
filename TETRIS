@@ -1,0 +1,268 @@
+using System;
+using System.Threading;
+
+class TetrisGame
+{
+    private const int Width = 10;
+    private const int Height = 20;
+    private static int[,] board = new int[Height, Width];
+
+    private static int currentX = 3;
+    private static int currentY = 0;
+    private static int currentRotation = 0;
+    private static int currentPieceType = 0;
+
+    private static int score = 0;
+    private static bool gameOver = false;
+
+    private static readonly int[,,,] Tetrominos = new int[7, 4, 4, 4]
+    {
+        {
+            { {0,0,0,0}, {1,1,1,1}, {0,0,0,0}, {0,0,0,0} },
+            { {0,0,1,0}, {0,0,1,0}, {0,0,1,0}, {0,0,1,0} },
+            { {0,0,0,0}, {0,0,0,0}, {1,1,1,1}, {0,0,0,0} },
+            { {0,1,0,0}, {0,1,0,0}, {0,1,0,0}, {0,1,0,0} }
+        },
+        {
+            { {0,0,0,0}, {0,1,1,0}, {0,1,1,0}, {0,0,0,0} },
+            { {0,0,0,0}, {0,1,1,0}, {0,1,1,0}, {0,0,0,0} },
+            { {0,0,0,0}, {0,1,1,0}, {0,1,1,0}, {0,0,0,0} },
+            { {0,0,0,0}, {0,1,1,0}, {0,1,1,0}, {0,0,0,0} }
+        },
+        {
+            { {0,0,0,0}, {0,1,0,0}, {1,1,1,0}, {0,0,0,0} },
+            { {0,0,0,0}, {0,1,0,0}, {0,1,1,0}, {0,1,0,0} },
+            { {0,0,0,0}, {0,0,0,0}, {1,1,1,0}, {0,1,0,0} },
+            { {0,0,0,0}, {0,1,0,0}, {1,1,0,0}, {0,1,0,0} }
+        },
+        {
+            { {0,0,0,0}, {0,1,1,0}, {1,1,0,0}, {0,0,0,0} },
+            { {0,0,0,0}, {0,1,0,0}, {0,1,1,0}, {0,0,1,0} },
+            { {0,0,0,0}, {0,0,0,0}, {0,1,1,0}, {1,1,0,0} },
+            { {1,0,0,0}, {1,1,0,0}, {0,1,0,0}, {0,0,0,0} }
+        },
+        {
+            { {0,0,0,0}, {1,1,0,0}, {0,1,1,0}, {0,0,0,0} },
+            { {0,0,0,0}, {0,0,1,0}, {0,1,1,0}, {0,1,0,0} },
+            { {0,0,0,0}, {0,0,0,0}, {1,1,0,0}, {0,1,1,0} },
+            { {0,1,0,0}, {1,1,0,0}, {1,0,0,0}, {0,0,0,0} }
+        },
+        {
+            { {0,0,0,0}, {1,0,0,0}, {1,1,1,0}, {0,0,0,0} },
+            { {0,0,0,0}, {0,1,1,0}, {0,1,0,0}, {0,1,0,0} },
+            { {0,0,0,0}, {0,0,0,0}, {1,1,1,0}, {0,0,1,0} },
+            { {0,1,0,0}, {0,1,0,0}, {1,1,0,0}, {0,0,0,0} }
+        },
+        {
+            { {0,0,0,0}, {0,0,1,0}, {1,1,1,0}, {0,0,0,0} },
+            { {0,1,0,0}, {0,1,0,0}, {0,1,1,0}, {0,0,0,0} },
+            { {0,0,0,0}, {1,1,1,0}, {1,0,0,0}, {0,0,0,0} },
+            { {1,1,0,0}, {0,1,0,0}, {0,1,0,0}, {0,0,0,0} }
+        }
+    };
+
+    public static void Main()
+    {
+        Console.CursorVisible = false;
+        Random rand = new Random();
+        SpawnPiece(rand);
+
+        Thread gameThread = new Thread(() =>
+        {
+            while (!gameOver)
+            {
+                Thread.Sleep(500); 
+                lock (board)
+                {
+                    if (!MovePiece(0, 1))
+                    {
+                        LockPiece();
+                        ClearLines();
+                        SpawnPiece(rand);
+                        if (!IsValidPosition(currentX, currentY, currentRotation, currentPieceType))
+                        {
+                            gameOver = true;
+                        }
+                    }
+                }
+            }
+        });
+        gameThread.Start();
+
+        while (!gameOver)
+        {
+            if (Console.KeyAvailable)
+            {
+                var key = Console.ReadKey(true).Key;
+                lock (board)
+                {
+                    if (key == ConsoleKey.LeftArrow) MovePiece(-1, 0);
+                    else if (key == ConsoleKey.RightArrow) MovePiece(1, 0);
+                    else if (key == ConsoleKey.DownArrow) MovePiece(0, 1);
+                    else if (key == ConsoleKey.UpArrow) RotatePiece();
+                    else if (key == ConsoleKey.Spacebar) DropInstantly();
+                }
+            }
+            Draw();
+            Thread.Sleep(30);
+        }
+
+        Console.Clear();
+        Console.SetCursorPosition(Width / 2 - 4, Height / 2);
+        Console.WriteLine("GAME OVER!");
+        Console.SetCursorPosition(Width / 2 - 6, Height / 2 + 1);
+        Console.WriteLine($"Score: {score}");
+        gameThread.Join();
+    }
+
+    private static void SpawnPiece(Random rand)
+    {
+        currentPieceType = rand.Next(0, 7);
+        currentRotation = 0;
+        currentX = Width / 2 - 2;
+        currentY = 0;
+    }
+
+    private static bool IsValidPosition(int x, int y, int rotation, int pieceType)
+    {
+        for (int row = 0; row < 4; row++)
+        {
+            for (int col = 0; col < 4; col++)
+            {
+                if (Tetrominos[pieceType, rotation, row, col] == 1)
+                {
+                    int boardX = x + col;
+                    int boardY = y + row;
+
+                    if (boardX < 0 || boardX >= Width || boardY >= Height)
+                        return false;
+                    if (boardY >= 0 && board[boardY, boardX] == 1)
+                        return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    private static bool MovePiece(int dx, int dy)
+    {
+        if (IsValidPosition(currentX + dx, currentY + dy, currentRotation, currentPieceType))
+        {
+            currentX += dx;
+            currentY += dy;
+            return true;
+        }
+        return false;
+    }
+
+    private static void RotatePiece()
+    {
+        int newRotation = (currentRotation + 1) % 4;
+        if (IsValidPosition(currentX, currentY, newRotation, currentPieceType))
+        {
+            currentRotation = newRotation;
+        }
+    }
+
+    private static void DropInstantly()
+    {
+        while (MovePiece(0, 1)) { }
+    }
+
+    private static void LockPiece()
+    {
+        for (int row = 0; row < 4; row++)
+        {
+            for (int col = 0; col < 4; col++)
+            {
+                if (Tetrominos[currentPieceType, currentRotation, row, col] == 1)
+                {
+                    int boardX = currentX + col;
+                    int boardY = currentY + row;
+                    if (boardY >= 0 && boardY < Height && boardX >= 0 && boardX < Width)
+                    {
+                        board[boardY, boardX] = 1;
+                    }
+                }
+            }
+        }
+    }
+
+    private static void ClearLines()
+    {
+        int linesCleared = 0;
+        for (int row = Height - 1; row >= 0; row--)
+        {
+            bool fullRow = true;
+            for (int col = 0; col < Width; col++)
+            {
+                if (board[row, col] == 0)
+                {
+                    fullRow = false;
+                    break;
+                }
+            }
+
+            if (fullRow)
+            {
+                linesCleared++;
+                for (int r = row; r > 0; r--)
+                {
+                    for (int c = 0; c < Width; c++)
+                    {
+                        board[r, c] = board[r - 1, c];
+                    }
+                }
+                for (int c = 0; c < Width; c++)
+                {
+                    board[0, c] = 0;
+                }
+                row++; 
+            }
+        }
+
+        if (linesCleared > 0)
+        {
+            score += linesCleared * 100 * linesCleared;
+        }
+    }
+
+    private static void Draw()
+    {
+        Console.SetCursorPosition(0, 0);
+        string output = "=== TETRIS ===\n";
+
+        for (int row = 0; row < Height; row++)
+        {
+            output += "|";
+            for (int col = 0; col < Width; col++)
+            {
+                bool isPiece = false;
+                int pRow = row - currentY;
+                int pCol = col - currentX;
+                if (pRow >= 0 && pRow < 4 && pCol >= 0 && pCol < 4)
+                {
+                    if (Tetrominos[currentPieceType, currentRotation, pRow, pCol] == 1)
+                    {
+                        isPiece = true;
+                    }
+                }
+
+                if (isPiece || board[row, col] == 1)
+                {
+                    output += "[]";
+                }
+                else
+                {
+                    output += " .";
+                }
+            }
+            output += "|\n";
+        }
+
+        output += "--------------------\n";
+        output += $"Score: {score}\n";
+        output += "Controls: < > Move | ↑ Rotate | ↓ Speed Up | Space Drop\n";
+        Console.Write(output);
+    }
+}
